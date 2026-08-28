@@ -2,3 +2,4 @@
 .codegraph/
 *.pyc
 .env
+cdr/

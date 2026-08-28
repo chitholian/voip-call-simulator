@@ -76,6 +76,7 @@ All knobs are environment variables. Key ones:
 | `CALLER_MAX_TOTAL_CALLS` | `0` | Stop after N attempts (0 = unlimited). |
 | `CALLER_MAX_SECONDS` | `0` | Stop after N seconds (0 = unlimited). |
 | `CALLEE_PROB_NO_ANSWER` | `0.20` | Probability of not answering. |
+| `CALLEE_ALLOW_IPS` | *(empty)* | Comma-separated source IPs/CIDRs allowed to call the callee (empty = allow all). Set to whitelist specific sources. |
 | `CALLEE_PROB_BUSY` | `0.08` | Probability of returning 486 Busy. |
 | `CALLEE_PROB_EARLY_MEDIA` | `0.08` | Probability of early media (183). |
 | `CALLEE_PROB_DECLINE_IN_RING` | `0.06` | Per-ring-step probability of declining (603). |
@@ -102,7 +103,7 @@ target software.
 
 ## Build & publish
 
-- Local build: `docker compose up -d --build` (alias `docker build -t voip-asterisk ./asterisk`).
+- Local build: `docker compose up -d --build` (alias `docker build -t chitholian/voip-call-simulator ./asterisk`).
 - Automatic publish: pushes to **GitHub Container Registry** (`ghcr.io`) on
   every push to `main`, tagged `latest` and with the commit SHA.
 - Base image: `andrius/asterisk:22` (Asterisk 22).

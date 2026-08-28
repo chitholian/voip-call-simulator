@@ -47,6 +47,9 @@ set -euo pipefail
 : "${CALLEE_TALK_MEDIAN:=60.0}"
 : "${CALLEE_TALK_SIGMA:=0.9}"
 : "${CALLEE_TALK_CHUNK:=8.0}"
+# IP whitelist (comma-separated IPs/CIDRs) permitted to call the callee. Empty
+# = allow all sources. Applied to the [anonymous] endpoint as a contact ACL.
+: "${CALLEE_ALLOW_IPS:=}"
 
 : "${CALLER_TALK_MIN:=8.0}"
 : "${CALLER_TALK_MAX:=180.0}"
@@ -118,6 +121,25 @@ protocol=tcp
 bind=0.0.0.0:${SIP_PORT}
 EOF
 chown asterisk:asterisk /var/lib/asterisk/pjsip-transport.conf
+
+# Render the inbound (callee) endpoint. If CALLEE_ALLOW_IPS is set it becomes a
+# strict whitelist (blanket deny + per-IP permit); otherwise all sources allowed.
+{
+  echo "[anonymous]"
+  echo "type=endpoint"
+  echo "context=callee"
+  echo "allow=all"
+  echo "trust_id_inbound=yes"
+  if [ -n "$CALLEE_ALLOW_IPS" ]; then
+    echo "deny=0.0.0.0/0"
+    split_csv "$CALLEE_ALLOW_IPS" | while read -r ip; do
+      echo "permit=${ip}"
+    done
+  else
+    echo "permit=0.0.0.0/0"
+  fi
+} > /var/lib/asterisk/pjsip-anonymous.conf
+chown asterisk:asterisk /var/lib/asterisk/pjsip-anonymous.conf
 
 # Render the outbound (caller) endpoint that dials the peer. dial
 # PJSIP/<number>@caller-out sends the INVITE to CALLER_PEER_HOST:PORT.

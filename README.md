@@ -56,12 +56,26 @@ docker run -d --name voip-callee --network host \
   -e AMI_PORT=5038 \
   -e AMI_USER=sim -e AMI_SECRET=callsim \
   -v "$PWD/asterisk/etc:/etc/asterisk:ro" \
-  voip-asterisk
+  chitholian/voip-call-simulator
 ```
 
 `[anonymous]` endpoint (in `asterisk/etc/pjsip.conf`) sends every inbound call to
 the `callee` context, which invokes `sim_callee.py`. Register with a softphone or
 dial from any UAC: `sip:6888@<host>:<SIP_PORT>`.
+
+To restrict which sources may call, set `CALLEE_ALLOW_IPS` (comma-separated
+IPs/CIDRs); the callee then rejects (403) calls from any other address:
+
+```bash
+docker run -d --name voip-callee --network host \
+  -e MODE=callee -e SIP_PORT=5060 -e AMI_PORT=5038 \
+  -e CALLEE_ALLOW_IPS=192.168.1.0/24,127.0.0.1/32 \
+  ghcr.io/chitholian/voip-call-simulator:latest
+```
+
+> When running the **caller and callee on the same host** (`network_mode: host`),
+> include `127.0.0.1/32` in `CALLEE_ALLOW_IPS` or the caller's INVITEs will be
+> rejected.
 
 ### Caller (make calls against a peer)
 
@@ -79,7 +93,7 @@ docker run -d --name voip-caller --network host \
   -e CALLER_TO_PREFIXES=6888 -e CALLER_TO_LEN=4 \
   -e CALLER_MAX_TOTAL_CALLS=500 -e CALLER_MAX_CONCURRENT=50 -e CALLER_RATE_PER_SEC=10 \
   -v "$PWD/asterisk/etc:/etc/asterisk:ro" \
-  voip-asterisk
+  chitholian/voip-call-simulator
 ```
 
 The caller drives its **own Asterisk** via AMI `Originate` and dials out through a
@@ -164,6 +178,7 @@ Both Asterisks produce **independent** CSV CDRs, so you can inspect:
 | `CALLER_DEFAULT_FROM` | *(empty)* | Optional static caller-id on the `caller-out` endpoint. |
 | `CALLER_TALK_*` | `8 / 180 / 60 / 0.9` | Caller-leg talk duration: min, max, lognormal median, sigma. |
 | **Callee** | | |
+| `CALLEE_ALLOW_IPS` | *(empty)* | Comma-separated source IPs/CIDRs allowed to call the callee. Empty = allow all. When set, the callee rejects (403) calls from any other source. |
 | `CALLEE_PROB_NO_ANSWER` | `0.20` | Probability of not answering (no 200, eventually timeout). |
 | `CALLEE_PROB_BUSY` | `0.08` | Probability of returning Busy (486). |
 | `CALLEE_PROB_EARLY_MEDIA` | `0.08` | Probability of sending early media (183). |

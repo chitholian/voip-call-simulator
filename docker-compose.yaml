@@ -1,9 +1,11 @@
 services:
   asterisk:
     build: ./asterisk
+    image: chitholian/voip-call-simulator
     network_mode: host
     env_file:
       - .env
     volumes:
       - /etc/localtime:/etc/localtime:ro
       - ./asterisk/etc:/etc/asterisk:ro
+      - ./cdr:/var/log/asterisk
