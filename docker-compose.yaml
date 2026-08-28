@@ -2,8 +2,8 @@ services:
   asterisk:
     build: ./asterisk
     network_mode: host
-    environment:
-      TZ: "${TZ:-UTC}"
+    env_file:
+      - .env
     volumes:
       - /etc/localtime:/etc/localtime:ro
       - ./asterisk/etc:/etc/asterisk:ro
