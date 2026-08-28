@@ -26,7 +26,7 @@ reconcile against the target software.
 # 1. Copy the environment template and tune it
 cp .env.example .env
 
-# 2. Build and start in callee mode (default MODE=callee, SIP_PORT=1280)
+# 2. Build and start in callee mode (default MODE=callee, SIP_PORT=5060)
 docker compose up -d --build
 
 # 3. Confirm a clean start (zero [ERROR]/[WARNING])
@@ -52,7 +52,7 @@ Because `network_mode: host` is used, give each a **distinct `SIP_PORT` + `AMI_P
 ```bash
 docker run -d --name voip-callee --network host \
   -e MODE=callee \
-  -e SIP_PORT=1280 \
+  -e SIP_PORT=5060 \
   -e AMI_PORT=5038 \
   -e AMI_USER=sim -e AMI_SECRET=callsim \
   -v "$PWD/asterisk/etc:/etc/asterisk:ro" \
@@ -74,7 +74,7 @@ docker run -d --name voip-caller --network host \
   -e SIP_PORT=2280 \
   -e AMI_PORT=5039 \
   -e AMI_USER=sim -e AMI_SECRET=callsim \
-  -e CALLER_PEER_HOST=127.0.0.1 -e CALLER_PEER_PORT=1280 \
+  -e CALLER_PEER_HOST=127.0.0.1 -e CALLER_PEER_PORT=5060 \
   -e CALLER_FROM_PREFIXES=9101,9202 -e CALLER_FROM_LEN=4 \
   -e CALLER_TO_PREFIXES=6888 -e CALLER_TO_LEN=4 \
   -e CALLER_MAX_TOTAL_CALLS=500 -e CALLER_MAX_CONCURRENT=50 -e CALLER_RATE_PER_SEC=10 \
@@ -89,7 +89,7 @@ after `CALLER_MAX_TOTAL_CALLS` originate attempts, and exits when all calls fini
 (`docker ps` → `Exited (0)`). Set a cap to 0 for unlimited.
 
 > Two roles on one host need distinct ports because of `network_mode: host`:
-> callee on `SIP_PORT=1280 / AMI_PORT=5038`, caller on `SIP_PORT=2280 / AMI_PORT=5039`.
+> callee on `SIP_PORT=5060 / AMI_PORT=5038`, caller on `SIP_PORT=2280 / AMI_PORT=5039`.
 
 ---
 
@@ -149,10 +149,10 @@ Both Asterisks produce **independent** CSV CDRs, so you can inspect:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `MODE` | `callee` | `callee` (answer) or `caller` (originate). |
-| `SIP_PORT` | `1280` | PJSIP UDP/TCP bind port (host networking → set distinct per container). |
+| `SIP_PORT` | `5060` | PJSIP UDP/TCP bind port (host networking → set distinct per container). |
 | `AMI_USER` / `AMI_SECRET` / `AMI_PORT` | `sim` / `callsim` / `5038` | AMI credentials the caller controller connects to. |
 | **Caller** | | |
-| `CALLER_PEER_HOST` / `CALLER_PEER_PORT` | `127.0.0.1` / `1280` | Peer to dial. |
+| `CALLER_PEER_HOST` / `CALLER_PEER_PORT` | `127.0.0.1` / `5060` | Peer to dial. |
 | `CALLER_FROM_PREFIXES` | `1000,1001,1002` | Comma-separated caller-id prefixes. |
 | `CALLER_FROM_LEN` | `4` | Random trailing digits appended to a from-prefix. |
 | `CALLER_TO_PREFIXES` | `2000,2001,2002` | Comma-separated destination prefixes. |

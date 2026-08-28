@@ -7,7 +7,7 @@
 set -euo pipefail
 
 : "${MODE:=callee}"          # callee | caller
-: "${SIP_PORT:=1280}"        # PJSIP transport bind port (host networking)
+: "${SIP_PORT:=5060}"        # PJSIP transport bind port (host networking)
 : "${AMI_USER:=sim}"
 : "${AMI_SECRET:=callsim}"
 : "${AMI_PORT:=5038}"
@@ -22,7 +22,7 @@ set -euo pipefail
 : "${CALLER_RING_MIN_MS:=15000}"
 : "${CALLER_RING_MAX_MS:=60000}"
 : "${CALLER_PEER_HOST:=127.0.0.1}"
-: "${CALLER_PEER_PORT:=1280}"
+: "${CALLER_PEER_PORT:=5060}"
 : "${CALLER_DEFAULT_FROM:=}"
 
 : "${CALLEE_PROB_NO_ANSWER:=0.20}"
