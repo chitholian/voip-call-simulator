@@ -1,11 +1,29 @@
 services:
-  asterisk:
+  callee:
     build: ./asterisk
     image: chitholian/voip-call-simulator
     network_mode: host
     env_file:
       - .env
+    environment:
+      MODE: callee
     volumes:
       - /etc/localtime:/etc/localtime:ro
       - ./asterisk/etc:/etc/asterisk:ro
-      - ./cdr:/var/log/asterisk
+      - ./cdr/callee:/var/log/asterisk
+
+  caller:
+    profiles: [caller]
+    build: ./asterisk
+    image: chitholian/voip-call-simulator
+    network_mode: host
+    env_file:
+      - .env
+    environment:
+      MODE: caller
+      SIP_PORT: 7060
+      AMI_PORT: 7038
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - ./asterisk/etc:/etc/asterisk:ro
+      - ./cdr/caller:/var/log/asterisk

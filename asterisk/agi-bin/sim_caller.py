@@ -10,6 +10,7 @@ at CALLER_PEER_HOST:PORT). Dial string: PJSIP/<number>@caller-out.
 import json
 import os
 import random
+import signal
 import socket
 import sys
 import threading
@@ -189,6 +190,15 @@ class OriginateRunner:
         self.to_len = int(caller.get("to_number_len", 4))
         self.total_originated = 0
         self.stop = False
+        # Graceful shutdown: catch SIGTERM/SIGINT, stop originating new calls
+        # and drain the in-flight ones so no call is cut mid-answer/talk.
+        signal.signal(signal.SIGTERM, self._handle_signal)
+        signal.signal(signal.SIGINT, self._handle_signal)
+
+    def _handle_signal(self, signum, frame):
+        sys.stderr.write(f"[signal] {signum} received, draining {self.ami.active_count()} active\n")
+        sys.stderr.flush()
+        self.stop = True
 
     def _random_number(self, prefixes, length):
         p = random.choice(prefixes)
@@ -233,9 +243,18 @@ class OriginateRunner:
 
     def ramp(self):
         while True:
+            if self.stop:
+                # Graceful shutdown (signal or max_seconds): stop originating
+                # and drain in-flight calls so none is dropped mid-call.
+                if self.ami.active_count() == 0:
+                    sys.stderr.write("[ramp] drained all active calls, exiting\n")
+                    break
+                time.sleep(0.2)
+                continue
             if self.max_seconds and (time.time() - self._start) >= self.max_seconds:
+                sys.stderr.write("[ramp] max_seconds reached, draining\n")
                 self.stop = True
-                break
+                continue
             if self.max_total and self.total_originated >= self.max_total:
                 if self.ami.active_count() == 0:
                     break
@@ -263,6 +282,11 @@ class OriginateRunner:
             self.ramp()
         finally:
             self.ami.close()
+            self._stop_asterisk()
+
+    def _stop_asterisk(self):
+        # Graceful stop flushes CDRs; entrypoint cleanup kill becomes a no-op.
+        os.system("asterisk -rx 'core stop gracefully'")
 
 
 def main():

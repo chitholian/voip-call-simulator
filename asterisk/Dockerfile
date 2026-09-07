@@ -25,4 +25,4 @@ RUN chown -R asterisk:asterisk /var/lib/asterisk/sounds /etc/asterisk /usr/lib/a
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 CMD []
 
-USER asterisk
+# USER asterisk

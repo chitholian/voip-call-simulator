@@ -202,7 +202,17 @@ trap cleanup EXIT
 case "$MODE" in
   caller)
     export AMI_USER AMI_SECRET AMI_PORT
-    exec python3 /var/lib/asterisk/agi-bin/sim_caller.py
+    python3 /var/lib/asterisk/agi-bin/sim_caller.py &
+    CALLER_PID=$!
+    _term() { kill -TERM "$CALLER_PID" 2>/dev/null || true; }
+    trap _term TERM INT
+    # wait is interrupted when TERM arrives (trap runs), so re-wait until the
+    # caller actually exits after draining its in-flight calls.
+    wait "$CALLER_PID" 2>/dev/null || true
+    while kill -0 "$CALLER_PID" 2>/dev/null; do
+      wait "$CALLER_PID" 2>/dev/null || true
+    done
+    trap - TERM INT
     ;;
   callee|*)
     # Just keep Asterisk alive; AGI scripts process inbound calls.
