@@ -61,12 +61,13 @@ def answer():
 
 def ringing():
     """Send 180 Ringing."""
-    command("RINGING", 2.0)
+    # AGI's RINGING command does not emit 180 on chan_pjsip; EXEC Ringing does.
+    exec_app("Ringing")
 
 
 def progress():
     """Send 183 Session Progress with SDP for early media."""
-    command("PROGRESS", 2.0)
+    exec_app("Progress")
 
 
 def hangup(code=0):
