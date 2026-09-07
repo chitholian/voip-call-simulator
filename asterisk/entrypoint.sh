@@ -215,7 +215,16 @@ case "$MODE" in
     trap - TERM INT
     ;;
   callee|*)
-    # Just keep Asterisk alive; AGI scripts process inbound calls.
-    wait "$ASTERISK_PID"
+    # Forward TERM/INT to Asterisk (SIGTERM = graceful stop: no new calls,
+    # in-flight calls finish) so the container exits cleanly, not 143.
+    _term() { kill -TERM "$ASTERISK_PID" 2>/dev/null || true; }
+    trap _term TERM INT
+    # wait is interrupted when TERM arrives (trap runs); re-wait until
+    # Asterisk has actually exited.
+    wait "$ASTERISK_PID" 2>/dev/null || true
+    while kill -0 "$ASTERISK_PID" 2>/dev/null; do
+      wait "$ASTERISK_PID" 2>/dev/null || true
+    done
+    trap - TERM INT
     ;;
 esac

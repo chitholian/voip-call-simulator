@@ -1,8 +1,9 @@
 services:
-  callee:
+  asterisk:
     build: ./asterisk
     image: chitholian/voip-call-simulator
     network_mode: host
+    stop_grace_period: 6m
     env_file:
       - .env
     environment:
@@ -17,6 +18,7 @@ services:
     build: ./asterisk
     image: chitholian/voip-call-simulator
     network_mode: host
+    stop_grace_period: 6m
     env_file:
       - .env
     environment:
