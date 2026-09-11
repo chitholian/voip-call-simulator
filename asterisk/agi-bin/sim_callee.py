@@ -224,12 +224,4 @@ def main():
     hangup(0)
 
 
-if __name__ == "__main__":
-    try:
-        main()
-    except Exception as e:
-        try:
-            sys.stderr.write("callee err: %s\n" % e)
-        except Exception:
-            pass
-        hangup(0)
+

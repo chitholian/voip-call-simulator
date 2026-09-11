@@ -1,46 +1,57 @@
 #!/usr/bin/env python3
-"""AGI minimal helper. Blocking commands; polls CHANNEL STATUS to detect hangup."""
-import sys
+"""FastAGI minimal helper. One persistent server; per-thread socket transport."""
 import select
+import threading
 import time
 
 
-AGI_ENV = {}
-_env_read = False
+_tls = threading.local()
 
-def _ensure_env():
-    global _env_read
-    if _env_read:
-        return
-    _env_read = True
-    r, _, _ = select.select([sys.stdin], [], [], 5.0)
-    if not r:
-        return
-    while True:
-        line = sys.stdin.readline()
-        if not line or line.strip() == "":
-            break
-        if ":" in line:
-            k, v = line.split(":", 1)
-            AGI_ENV[k.strip()] = v.strip()
-        else:
-            break
+
+def bind(sock):
+    """Bind current thread to a FastAGI socket (one call per connection)."""
+    _tls.sock = sock
+    _tls.f = sock.makefile("rwb")
+    _tls.env = {}
+    _tls.env_read = False
+
+
+def agi_env():
+    """Read and parse AGI MIME header from socket (once per call)."""
+    if not getattr(_tls, "env_read", False):
+        t = _tls
+        r, _, _ = select.select([t.sock], [], [], 5.0)
+        if r:
+            while True:
+                line = t.f.readline()
+                if not line or line.strip() == b"":
+                    break
+                if b":" in line:
+                    k, v = line.split(b":", 1)
+                    t.env[k.decode().strip()] = v.decode().strip()
+        t.env_read = True
+    return _tls.env
 
 
 def command(cmd_str, timeout=2.0):
-    _ensure_env()
-    sys.stdout.write(cmd_str + "\n")
-    sys.stdout.flush()
-    r, _, _ = select.select([sys.stdin], [], [], timeout)
+    """Send one AGI command, read the reply. None on timeout."""
+    agi_env()
+    t = _tls
+    t.f.write((cmd_str + "\n").encode())
+    t.f.flush()
+    r, _, _ = select.select([t.sock], [], [], timeout)
     if not r:
         return None
-    return sys.stdin.readline()
+    line = t.f.readline()
+    if not line:
+        return ""
+    return line.decode().rstrip("\n")
 
 
 def alive():
     """True if the channel is still up (status != 0)."""
     line = command("CHANNEL STATUS", 1.0)
-    if line is None:
+    if line is None or line == "":
         return False
     return "result=0" not in line
 
@@ -61,7 +72,6 @@ def answer():
 
 def ringing():
     """Send 180 Ringing."""
-    # AGI's RINGING command does not emit 180 on chan_pjsip; EXEC Ringing does.
     exec_app("Ringing")
 
 

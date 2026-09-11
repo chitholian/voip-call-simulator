@@ -139,7 +139,7 @@ Both Asterisks produce **independent** CSV CDRs, so you can inspect:
 | `asterisk/Dockerfile` | Builds on `andrius/asterisk:22`, downloads core-en sounds (g729/g723/gsm/ulaw/alaw), copies modules/etc/sounds/agi-bin/entrypoint. |
 | `asterisk/etc/modules.conf` | **Explicit** module list (`autoload=no`): PJSIP stack (incl. mandatory `res_pjsip_pubsub`), formats, codecs, dialplan apps (`Dial`/`Playback`/`AGI`), bridging (`bridge_simple`, `bridge_native_rtp`), and `cdr_csv`. Dropping any dependency (e.g. `res_pjsip_pubsub`, `res_agi`, `res_speech`, `func_callerid`) breaks chan_pjsip / AGI / CallerID. |
 | `asterisk/etc/pjsip.conf` | Endpoints + runtime transport/caller includes. |
-| `asterisk/etc/extensions.conf` | Dialplan: `caller`, `caller-dial`, `caller_talk`, `callee` contexts. |
+| `asterisk/etc/extensions.conf` | Dialplan: `caller`, `caller-dial`, `caller_talk`, `callee` contexts. `caller_talk` + `callee` are rendered at runtime into `/var/lib/asterisk/extensions-agi.conf` (FastAGI). |
 | `asterisk/etc/cdr.conf` | CSV CDR backend; `unanswered=yes`/`congestion=yes` logs non-answered dispositions too. |
 | `asterisk/etc/*.conf` (logger, manager, asterisk, acl, udptl, pjproject, ccss, features, cel, indications) | Minimal stubs to keep startup clean. |
 
@@ -148,6 +148,7 @@ Both Asterisks produce **independent** CSV CDRs, so you can inspect:
 | Path | Source |
 |------|--------|
 | `/var/lib/asterisk/sim.json` | All `CALLEE_*` / `CALLER_*` env knobs (JSON consumed by the AGI scripts). |
+| `/var/lib/asterisk/extensions-agi.conf` | FastAGI dialplan include: `caller_talk` + `callee` contexts with `FASTAGI_PORT`. |
 | `/var/lib/asterisk/pjsip-transport.conf` | `SIP_PORT` → `[transport-udp]` / `[transport-tcp]` bind. |
 | `/var/lib/asterisk/pjsip-caller.conf` | `[caller-out]` endpoint + AOR `contact=sip:<CALLER_PEER_HOST>:<CALLER_PEER_PORT>`. |
 | `/var/lib/asterisk/manager-ami.conf` | `[sim]` AMI user, `AMI_PORT`, secret. |
@@ -164,6 +165,7 @@ Both Asterisks produce **independent** CSV CDRs, so you can inspect:
 |----------|---------|-------------|
 | `MODE` | `callee` | `callee` (answer) or `caller` (originate). |
 | `SIP_PORT` | `5060` | PJSIP UDP/TCP bind port (host networking → set distinct per container). |
+| `FASTAGI_PORT` | `4573` | FastAGI server port (distinct per container on one host). |
 | `AMI_USER` / `AMI_SECRET` / `AMI_PORT` | `sim` / `callsim` / `5038` | AMI credentials the caller controller connects to. |
 | **Caller** | | |
 | `CALLER_PEER_HOST` / `CALLER_PEER_PORT` | `127.0.0.1` / `5060` | Peer to dial. |
@@ -208,9 +210,11 @@ Both Asterisks produce **independent** CSV CDRs, so you can inspect:
   recorded for reconciliation. Columns: `src, dst, context, clid, channel,
   app, appdata, start, answer, end, duration, billsec, disposition, amaflags,
   uniqueid, userfield` (plus `usegmtime` UTC timestamps).
-- **AGI library fix**: `agi_lib.py::_ensure_env()` consumes the initial AGI
+- **AGI library fix**: `agi_lib.py::agi_env()` consumes the initial AGI
   MIME header block so `GET VARIABLE` / `PJSIP_HEADER(read,From)` return real
-  values instead of being misinterpreted as command replies.
+  values instead of being misinterpreted as command replies. Thread-local socket
+  transport replaces stdin/stdout — one persistent FastAGI server, one thread
+  per active call (no per-call Python fork).
 
 ### Useful debugging commands
 

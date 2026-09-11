@@ -6,8 +6,14 @@
 # - In caller mode: runs sim_caller.py to fire calls via AMI.
 set -euo pipefail
 
+# Raise the FD limit early so Asterisk + AGI scripts inherit it. Best-effort:
+# non-root runs can only raise soft up to the existing hard limit.
+ulimit -Hn unlimited 2>/dev/null || true
+ulimit -n "${MAX_OPEN_FILES:-1048576}" 2>/dev/null || true
+
 : "${MODE:=callee}"          # callee | caller
 : "${SIP_PORT:=5060}"        # PJSIP transport bind port (host networking)
+: "${FASTAGI_PORT:=4573}"    # FastAGI server port (distinct per container on one host)
 : "${AMI_USER:=sim}"
 : "${AMI_SECRET:=callsim}"
 : "${AMI_PORT:=5038}"
@@ -108,6 +114,20 @@ mkdir -p /var/run/asterisk /var/log/asterisk /var/log/asterisk/cdr-csv /var/spoo
 chown -R asterisk:asterisk /var/run/asterisk /var/log/asterisk /var/spool/asterisk /var/lib/asterisk/agi-bin || true
 chown asterisk:asterisk /var/lib/asterisk/sounds 2>/dev/null || true
 
+# Render FastAGI dialplan include (supports distinct ports per container on one host).
+cat > /var/lib/asterisk/extensions-agi.conf <<EOF
+; --- caller_talk: outbound leg after answer (Dial option B) ---
+[caller_talk]
+exten => s,1,AGI(agi://127.0.0.1:${FASTAGI_PORT}/caller_media)
+ same => n,Hangup()
+
+; --- callee: inbound calls from anonymous endpoint ---
+[callee]
+exten => _X.,1,AGI(agi://127.0.0.1:${FASTAGI_PORT}/callee)
+ same => n,Hangup()
+EOF
+chown asterisk:asterisk /var/lib/asterisk/extensions-agi.conf
+
 # Render PJSIP transports with the configured bind port.
 cat > /var/lib/asterisk/pjsip-transport.conf <<EOF
 [transport-udp]
@@ -193,7 +213,13 @@ for _ in $(seq 1 50); do
   sleep 0.2
 done
 
+# Start FastAGI server (persistent process replaces per-call fork).
+exec_runas python3 /var/lib/asterisk/agi-bin/fastagi_server.py &
+FASTAGI_PID=$!
+
 cleanup() {
+  kill "$FASTAGI_PID" 2>/dev/null || true
+  wait "$FASTAGI_PID" 2>/dev/null || true
   kill "$ASTERISK_PID" 2>/dev/null || true
   wait "$ASTERISK_PID" 2>/dev/null || true
 }
