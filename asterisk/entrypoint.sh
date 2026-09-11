@@ -213,13 +213,23 @@ for _ in $(seq 1 50); do
   sleep 0.2
 done
 
-# Start FastAGI server (persistent process replaces per-call fork).
-exec_runas python3 /var/lib/asterisk/agi-bin/fastagi_server.py &
-FASTAGI_PID=$!
+# Start FastAGI server (persistent process replaces per-call fork), supervised:
+# respawn on any unexpected exit; stop on TERM/INT (container shutdown).
+FASTAGI_STOP=0
+( trap 'FASTAGI_STOP=1; kill "$FASTAGI_PID" 2>/dev/null || true; exit 0' TERM INT
+  while [ "$FASTAGI_STOP" -eq 0 ]; do
+    exec_runas python3 /var/lib/asterisk/agi-bin/fastagi_server.py &
+    FASTAGI_PID=$!
+    wait "$FASTAGI_PID" 2>/dev/null || true
+    [ "$FASTAGI_STOP" -eq 0 ] || exit 0
+    echo "fastagi: server exited unexpectedly, restarting" >&2
+    sleep 1
+  done ) &
+FASTAGI_SUPER_PID=$!
 
 cleanup() {
-  kill "$FASTAGI_PID" 2>/dev/null || true
-  wait "$FASTAGI_PID" 2>/dev/null || true
+  kill "$FASTAGI_SUPER_PID" 2>/dev/null || true
+  wait "$FASTAGI_SUPER_PID" 2>/dev/null || true
   kill "$ASTERISK_PID" 2>/dev/null || true
   wait "$ASTERISK_PID" 2>/dev/null || true
 }

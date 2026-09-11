@@ -6,10 +6,12 @@ On connect, res_agi streams AGI header then commands over the socket.
 One persistent process replaces one spawn-per-call (normal AGI).
 One thread per active call.
 """
+import errno
 import os
 import socket
 import sys
 import threading
+import time
 
 sys.path.insert(0, "/var/lib/asterisk/agi-bin")
 import agi_lib
@@ -49,12 +51,17 @@ def _handle(sock):
             pass
 
 
-def _serve(srv):
+def _serve(srv, accept_fn=None):
+    accept = accept_fn or srv.accept
     while True:
         try:
-            conn, _ = srv.accept()
-        except OSError:
-            break
+            conn, _ = accept()
+        except OSError as e:
+            if e.errno in (errno.EBADF, errno.EINVAL):
+                break
+            sys.stderr.write("fastagi: accept error, retrying: %s\n" % (e,))
+            time.sleep(0.1)
+            continue
         threading.Thread(target=_handle, args=(conn,), daemon=True).start()
 
 
@@ -145,6 +152,35 @@ def selftest():
         c.close()
     except Exception as e:
         sys.stderr.write("selftest: FAIL callee-test: %s\n" % e)
+        ok = False
+
+    # Test 3: a transient accept() error (ECONNABORTED under load) must not kill
+    # the server — the loop retries and keeps serving.
+    try:
+        real = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        real.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        real.bind(("127.0.0.1", 0))
+        real_port = real.getsockname()[1]
+        real.listen(1)
+        calls = {"n": 0}
+
+        def flaky_accept():
+            if calls["n"] == 0:
+                calls["n"] += 1
+                raise OSError(errno.ECONNABORTED, "Connection aborted")
+            return real.accept()
+
+        threading.Thread(target=_serve, args=(real, flaky_accept), daemon=True).start()
+        c = socket.create_connection(("127.0.0.1", real_port), timeout=3)
+        f = c.makefile("rwb")
+        f.write(b"agi_network: yes\nagi_network_script: callee\n\n")
+        f.flush()
+        line = f.readline().decode().strip()
+        check("transient-accept-survives", line, "GET VARIABLE PJSIP_HEADER(read,From)")
+        c.close()
+        real.close()
+    except Exception as e:
+        sys.stderr.write("selftest: FAIL transient-accept: %s\n" % e)
         ok = False
 
     srv.close()

@@ -2,6 +2,7 @@ services:
   asterisk:
     build: ./asterisk
     image: chitholian/voip-call-simulator
+    restart: unless-stopped
     ulimits:
       nofile:
         soft: 1048576
@@ -21,6 +22,7 @@ services:
     profiles: [caller]
     build: ./asterisk
     image: chitholian/voip-call-simulator
+    restart: unless-stopped
     ulimits:
       nofile:
         soft: 1048576
