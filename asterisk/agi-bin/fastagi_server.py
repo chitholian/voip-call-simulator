@@ -8,6 +8,7 @@ One thread per active call.
 """
 import errno
 import os
+import resource
 import socket
 import sys
 import threading
@@ -66,6 +67,15 @@ def _serve(srv, accept_fn=None):
 
 
 def main():
+    # runuser (PAM limits) resets soft RLIMIT_NOFILE to 1024 regardless of the
+    # container ulimits; a burst of AGI connections then hits EMFILE on accept.
+    # Raise soft to hard so the fd ceiling tracks the container's ulimit.
+    soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    if soft < hard:
+        try:
+            resource.setrlimit(resource.RLIMIT_NOFILE, (hard, hard))
+        except (OSError, ValueError):
+            pass
     srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     srv.bind((HOST, PORT))
