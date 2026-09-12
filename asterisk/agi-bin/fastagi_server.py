@@ -112,7 +112,7 @@ def selftest():
         sys.stderr.write("selftest: FAIL unknown-script: %s\n" % e)
         ok = False
 
-    # Test 2: callee handler → GET VARIABLE + CHANNEL STATUS + EOF
+    # Test 2: callee handler → compute-only: From-read + SET VARIABLEs + EOF
     try:
         c = socket.create_connection(("127.0.0.1", port), timeout=5)
         f = c.makefile("rwb")
@@ -136,25 +136,72 @@ def selftest():
         f.write(b"200 result=0\n")
         f.flush()
 
-        cmd2 = f.readline().decode().strip()
-        check("callee-cmd2", cmd2, "CHANNEL STATUS")
-        f.write(b"200 result=0\n")
-        f.flush()
-
-        cmd3 = f.readline().decode().strip()
-        check("callee-cmd3", cmd3, "CHANNEL STATUS")
-        f.write(b"200 result=0\n")
-        f.flush()
-
-        # Handler returns, server closes socket
-        eof = f.readline()
-        check("callee-eof", eof, b"")
+        # Then scenario vars; handler must exit without any CHANNEL STATUS
+        # or sleep commands.
+        n = 0
+        seen_outcome = False
+        while True:
+            line = f.readline()
+            if line == b"":
+                break
+            txt = line.decode().strip()
+            if not txt.startswith("SET VARIABLE "):
+                check("callee-unexpected-cmd", txt, "SET VARIABLE ...")
+                ok = False
+                break
+            n += 1
+            if "CALLEE_OUTCOME" in txt:
+                seen_outcome = True
+            f.write(b"200 result=0\n")
+            f.flush()
+        check("callee-setvars-count", n >= 10, True)
+        check("callee-setvars-outcome", seen_outcome, True)
         c.close()
     except Exception as e:
         sys.stderr.write("selftest: FAIL callee-test: %s\n" % e)
         ok = False
 
-    # Test 3: a transient accept() error (ECONNABORTED under load) must not kill
+    # Test 3: caller_media handler → compute-only: 2 CALLER_* SET VARIABLEs, no
+    # STREAM FILE / CHANNEL STATUS / sleeps, exits immediately on EOF.
+    try:
+        c = socket.create_connection(("127.0.0.1", port), timeout=5)
+        f = c.makefile("rwb")
+        hdr = (
+            b"agi_network: yes\n"
+            b"agi_request: agi://127.0.0.1:%d/caller_media\n" % port +
+            b"agi_network_script: caller_media\n"
+            b"agi_channel: PJSIP/test-out-1\n"
+            b"agi_language: en\n"
+            b"agi_context: caller_talk\n"
+            b"agi_priority: 1\n"
+            b"agi_uniqueid: test-002\n\n"
+        )
+        f.write(hdr)
+        f.flush()
+
+        cmds = []
+        while True:
+            line = f.readline()
+            if line == b"":
+                break
+            txt = line.decode().strip()
+            if not txt.startswith("SET VARIABLE "):
+                check("caller-unexpected-cmd", txt, "SET VARIABLE ...")
+                ok = False
+                break
+            cmds.append(txt)
+            f.write(b"200 result=0\n")
+            f.flush()
+        check("caller-first-var", cmds[0] if cmds else None,
+              "SET VARIABLE CALLER_OUTCOME TALK")
+        check("caller-has-sounds", any("CALLER_SOUNDS" in c for c in cmds), True)
+        check("caller-setvars-count", len(cmds), 2)
+        c.close()
+    except Exception as e:
+        sys.stderr.write("selftest: FAIL caller-test: %s\n" % e)
+        ok = False
+
+    # Test 4: a transient accept() error (ECONNABORTED under load) must not kill
     # the server — the loop retries and keeps serving.
     try:
         real = socket.socket(socket.AF_INET, socket.SOCK_STREAM)

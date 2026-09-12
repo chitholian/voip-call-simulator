@@ -96,6 +96,11 @@ def stream_file(fname):
     command(f'STREAM FILE {fname} ""', 10.0)
 
 
+def set_var(name, val):
+    """Set a channel variable (value must not contain spaces)."""
+    command(f"SET VARIABLE {name} {val}", 2.0)
+
+
 def get_var(v, full=False):
     kind = "GET FULL VARIABLE" if full else "GET VARIABLE"
     line = command(f"{kind} {v}", 2.0)

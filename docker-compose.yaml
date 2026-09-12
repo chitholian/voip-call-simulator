@@ -1,5 +1,6 @@
 services:
-  asterisk:
+  callee:
+    profiles: [callee]
     build: ./asterisk
     image: chitholian/voip-call-simulator
     restart: unless-stopped
@@ -15,7 +16,6 @@ services:
       MODE: callee
     volumes:
       - /etc/localtime:/etc/localtime:ro
-      # - ./asterisk/etc:/etc/asterisk:ro
       - ./cdr/callee:/var/log/asterisk
 
   caller:
@@ -38,5 +38,4 @@ services:
       FASTAGI_PORT: 5573
     volumes:
       - /etc/localtime:/etc/localtime:ro
-      # - ./asterisk/etc:/etc/asterisk:ro
       - ./cdr/caller:/var/log/asterisk

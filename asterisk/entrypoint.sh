@@ -114,17 +114,67 @@ mkdir -p /var/run/asterisk /var/log/asterisk /var/log/asterisk/cdr-csv /var/spoo
 chown -R asterisk:asterisk /var/run/asterisk /var/log/asterisk /var/spool/asterisk /var/lib/asterisk/agi-bin || true
 chown asterisk:asterisk /var/lib/asterisk/sounds 2>/dev/null || true
 
+# Sound inventory for the talk phase (flat .ulaw scan, same as sounds.py).
+shopt -s nullglob
+sound_list=""
+for f in /var/lib/asterisk/sounds/*.ulaw; do
+  case "$sound_list" in
+    "") sound_list="$(basename "$f" .ulaw)" ;;
+    *)  sound_list="$sound_list,$(basename "$f" .ulaw)" ;;
+  esac
+done
+sound_count=$(for f in /var/lib/asterisk/sounds/*.ulaw; do echo x; done | wc -l)
+
 # Render FastAGI dialplan include (supports distinct ports per container on one host).
+# sim_callee.py rolls the whole scenario into CALLEE_* vars and returns instantly;
+# the callee context executes it (Wait/Ringing/Progress/Answer/Playback) so no AGI
+# thread is held for the call duration. Dialplan '$' refs are escaped (\$) so bash
+# leaves them to Asterisk.
 cat > /var/lib/asterisk/extensions-agi.conf <<EOF
 ; --- caller_talk: outbound leg after answer (Dial option B) ---
+; sim_caller_media.py computes the talk script into CALLER_* vars and returns
+; instantly; this context executes it (Playback aborts natively on hangup).
 [caller_talk]
-exten => s,1,AGI(agi://127.0.0.1:${FASTAGI_PORT}/caller_media)
+exten => s,1,NoOp(CALLER-MEDIA start)
+ same => n,AGI(agi://127.0.0.1:${FASTAGI_PORT}/caller_media)
+ same => n,GotoIf(\$["\${CALLER_SOUNDS}" = ""]?caller_talk,end,1)
+ same => n,Goto(caller_talk,sounds,1)
+exten => sounds,1,Playback(\${CALLER_SOUNDS})
  same => n,Hangup()
+exten => end,1,Hangup()
 
 ; --- callee: inbound calls from anonymous endpoint ---
 [callee]
-exten => _X.,1,AGI(agi://127.0.0.1:${FASTAGI_PORT}/callee)
+exten => _X.,1,NoOp(CALLEE-SIM start)
+ same => n,AGI(agi://127.0.0.1:${FASTAGI_PORT}/callee)
+ same => n,GotoIf(\$["\${CALLEE_OUTCOME}" = ""]?callee,end,1)
+ same => n,Wait(\${CALLEE_PDD})
+ same => n,GotoIf(\$["\${CALLEE_OUTCOME}" = "NO_ANSWER"]?callee,noanswer,1)
+ same => n,GotoIf(\$["\${CALLEE_OUTCOME}" = "BUSY"]?callee,busy,1)
+ same => n,Ringing()
+ same => n,GotoIf(\$[\${CALLEE_RING_DECLINE_AT} > 0]?callee,ring-decline,1)
+ same => n,Wait(\${CALLEE_RING})
+ same => n,GotoIf(\$["\${CALLEE_OUTCOME}" = "EARLY"]?callee,early,1)
+ same => n,Goto(callee,talk,1)
+exten => ring-decline,1,Wait(\${CALLEE_RING_DECLINE_AT})
+ same => n,Hangup(21)
+exten => noanswer,1,Ringing()
+ same => n,Wait(\${CALLEE_ABANDON_AT})
  same => n,Hangup()
+exten => busy,1,Busy()
+ same => n,Hangup()
+exten => early,1,Progress()
+ same => n,GotoIf(\$[\${CALLEE_EARLY_DECLINE} = 1]?callee,end,1)
+ same => n,Wait(\${CALLEE_EARLY_PLAY})
+ same => n,GotoIf(\$[\${CALLEE_EARLY_ABANDON} = 1]?callee,end,1)
+ same => n,Goto(callee,talk,1)
+exten => talk,1,Answer()
+ same => n,Wait(\${CALLEE_GAP})
+ same => n,GotoIf(\$["\${CALLEE_SOUNDS}" = ""]?callee,end,1)
+ same => n,Goto(callee,sounds,1)
+exten => sounds,1,Playback(\${CALLEE_SOUNDS})
+ same => n,Hangup()
+exten => end,1,Hangup()
 EOF
 chown asterisk:asterisk /var/lib/asterisk/extensions-agi.conf
 

@@ -1,13 +1,21 @@
 #!/usr/bin/env python3
 """Caller-side media AGI. Runs on the outbound leg after the callee answers
-(Dial option B). Streams random core-sounds for a lognormal-duration call."""
+(Dial option B). Computes the whole talk plan up front — duration and the
+exact sound sequence — into CALLER_* channel variables and returns instantly.
+The caller_talk dialplan then runs it (Playback aborts natively on peer
+hangup), so no AGI thread is held for the call duration.
+
+Vars set (caller_talk context):
+  CALLER_OUTCOME  always "TALK" (debug/consistency)
+  CALLER_SOUNDS   '&'-joined sound names, one 1s sound per talk second
+"""
 import sys
 import json
 import math
 import random
 
 sys.path.insert(0, "/var/lib/asterisk/agi-bin")
-from agi_lib import stream_file, wait_seconds, hangup, alive
+from agi_lib import set_var
 from sounds import random_sound
 
 CFG = "/var/lib/asterisk/sim.json"
@@ -30,22 +38,12 @@ def main():
     target = math.exp(random.gauss(math.log(median), sigma))
     target = max(lo, min(hi, target))
 
-    elapsed = 0.0
-    while elapsed < target:
-        if not alive():
-            return
+    n = max(1, int(round(target)))
+    seq = []
+    for _ in range(n):
         s = random_sound()
-        if not s:
-            wait_seconds(0.5)
-            elapsed += 0.5
-            continue
-        stream_file(s)
-        elapsed += 1.0
-        # brief inter-chunk pause for natural pacing
-        if random.random() < 0.4:
-            wait_seconds(random.uniform(0.2, 1.0))
+        if s:
+            seq.append(s)
 
-    hangup(0)
-
-
-
+    set_var("CALLER_OUTCOME", "TALK")
+    set_var("CALLER_SOUNDS", "&".join(seq))

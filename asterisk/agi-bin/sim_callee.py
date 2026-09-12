@@ -1,37 +1,31 @@
 #!/usr/bin/env python3
 """Human-like callee simulation (AGI), driven by /var/lib/asterisk/sim.json.
 
-State machine matches real-world telephony. Each stage has a random delay
-followed by a probabilistic transition (decline/abandon/continue), so the
-overall path is non-deterministic but anchored in realistic distributions.
+Compute-only FastAGI handler: rolls the *entire* call scenario upfront (outcome,
+all durations, decline points, talk plan), writes it as CALLEE_* channel
+variables, and returns instantly. No sleeps, no media — the dialplan (rendered
+by entrypoint.sh into extensions-agi.conf) executes the timeline with Wait/
+Ringing/Progress/Answer/Playback, so no AGI thread/socket is held per call.
 
-Stages:
-  A. PDD        — random wait before any signalling.
-  B. Umbrella   — no-answer (ring-only) | busy (486) | proceed to ring.
-  C. Ring       — send 180, hold with per-step decline risk.
-  D. Early      — small chance: 183 + play, then decline/continue.
-  E. Answer     — 200, random pickup gap.
-  F. Talk loop  — stream random audio in chunks; per-chunk hangup chance.
+Scenario variables (all consumed by dialplan):
+  CALLEE_OUTCOME        NO_ANSWER | BUSY | RING_DECLINE | EARLY | TALK
+  CALLEE_PDD            silent post-dial delay  (all branches)
+  CALLEE_RING           ring hold when no decline (180)
+  CALLEE_RING_DECLINE_AT  seconds into ring where 603 fires; 0 = no decline
+  CALLEE_ABANDON_AT     no-answer hold before hangup (NO_ANSWER)
+  CALLEE_EARLY_PLAY     early-media hold length (EARLY)
+  CALLEE_EARLY_DECLINE  1 = decline during early media
+  CALLEE_EARLY_ABANDON  1 = hangup after early media (40% roll)
+  CALLEE_GAP            pickup gap after Answer
+  CALLEE_SOUNDS         '&'-joined sound sequence (one 1s sound per talk second)
 """
 import sys
 import json
 import random
-import time
 import math
 
 sys.path.insert(0, "/var/lib/asterisk/agi-bin")
-from agi_lib import (
-    answer,
-    ringing,
-    progress,
-    exec_app,
-    stream_file,
-    wait_seconds,
-    hangup,
-    alive,
-    get_var,
-    command,
-)
+from agi_lib import command, set_var
 from sounds import random_sound
 
 CFG = "/var/lib/asterisk/sim.json"
@@ -62,50 +56,31 @@ def lognormal_clamped(median, sigma, lo, hi):
     return max(lo, min(hi, v))
 
 
-# --- high-level actions -------------------------------------------------------
+def decline_time(prob, duration, poll_s=0.5):
+    """Single-shot equivalent of the old per-poll decline loop.
 
-def play_for_seconds(total_s, max_chunk_s=10.0):
-    """Stream random sounds until total_s elapsed (or channel dies).
-    Chunked so the AGI process can detect peer hangup promptly."""
-    if total_s <= 0:
-        return
-    elapsed = 0.0
-    while elapsed < total_s:
-        if not alive():
-            return
-        s = random_sound()
-        if not s:
-            # fallback to short WAIT if no sounds available
-            wait_seconds(min(0.5, total_s - elapsed))
-            elapsed += 0.5
-            continue
-        stream_file(s)  # blocks for the file's actual duration
-        elapsed += 1.0   # approx; each stream_file consumes ≥1s
-        if elapsed >= total_s:
-            return
-
-
-def hold_with_decline(total_s, decline_prob, poll_s=0.5):
-    """Hold for up to total_s, evaluating a decline at each poll interval.
-    Returns True if held to completion, False if declined, None if peer hung up."""
-    steps = max(1, int(total_s / poll_s))
-    for _ in range(steps):
-        if not alive():
-            return None
-        if random.random() < decline_prob:
-            return False
-        wait_seconds(min(poll_s, total_s))
-        total_s -= poll_s
-        if total_s <= 0:
-            return True
-    return True
+    The old code polled every poll_s and declined when random() < q, with
+    q = prob / max(duration,1) * poll_s. That is a binomial process with
+    steps = duration/poll_s and per-step success q. Inverting the geometric
+    CDF yields the survival count in one draw. Returns the decline time on
+    the poll grid, or None if the hold survives to completion (0 = instantly).
+    """
+    if prob <= 0 or duration <= 0:
+        return None
+    steps = max(1, int(duration / poll_s))
+    q = prob / max(duration, 1.0) * poll_s
+    if q >= 1.0:
+        return 0.0
+    survived = int(math.log(1.0 - random.random()) / math.log(1.0 - q))
+    if survived >= steps:
+        return None
+    return survived * poll_s
 
 
 # --- main flow ----------------------------------------------------------------
 
 def main():
     try:
-        from agi_lib import command
         raw_from = command("GET VARIABLE PJSIP_HEADER(read,From)", 2.0)
         from_val = ""
         if raw_from and "(" in raw_from and ")" in raw_from:
@@ -130,7 +105,6 @@ def main():
     # Decline probs per stage (probability of declining *at* this stage).
     p_decline_ring = float(cfg.get("prob_decline_in_ring", 0.06))
     p_decline_early = float(cfg.get("prob_decline_in_early", 0.35))
-    p_hangup_per_chunk = float(cfg.get("prob_hangup_per_chunk", 0.22))
 
     # Random durations.
     pdd = exp_clamped(
@@ -158,70 +132,53 @@ def main():
         lo=float(cfg.get("talk_min", 8.0)),
         hi=float(cfg.get("talk_max", 180.0)),
     )
-    chunk = float(cfg.get("talk_chunk", 8.0))
 
-    # A. Post-dial delay (silent setup, no signalling yet).
-    wait_seconds(pdd)
-    if not alive():
-        return
-
-    # B. Umbrella decision.
+    # Roll the umbrella first (no_answer/busy are terminal before any ring risk).
     r = random.random()
+    outf = ""
+    ring_decline_at = decline_time(p_decline_ring, ring)
+    early_play_at = early_play
+    early_declined = False
+    early_abandon = False
+    abandon_at = 0.0
     if r < p_no_answer:
-        # No-answer: never answer. Caller abandons.
-        ringing()  # 180
-        abandoned_at = exp_clamped(mean=25.0, lo=8.0, hi=40.0)
-        hold_with_decline(abandoned_at, decline_prob=0.0, poll_s=1.0)
-        hangup(0)
-        return
-    if r < p_no_answer + p_busy:
-        exec_app("Busy")  # 486
-        return
+        outf = "NO_ANSWER"
+        abandon_at = exp_clamped(mean=25.0, lo=8.0, hi=40.0)
+    elif r < p_no_answer + p_busy:
+        outf = "BUSY"
+    elif ring_decline_at is not None:
+        outf = "RING_DECLINE"
+        ring = ring_decline_at
+    else:
+        if random.random() < p_early:
+            outf = "EARLY"
+            early_declined = decline_time(p_decline_early, early_play) is not None
+            early_abandon = (not early_declined) and random.random() < 0.4
+        else:
+            outf = "TALK"
 
-    # C. Ring (180 Ringing) — hold with decline risk.
-    ringing()
-    ring_result = hold_with_decline(ring, decline_prob=p_decline_ring / max(ring, 1.0) * 0.5,
-                                    poll_s=0.5)
-    if ring_result is None:
-        return  # peer hung up
-    if ring_result is False:
-        hangup(21)  # 603 Decline
-        return
+    # Talk plan (only consumed for TALK; harmless elsewhere).
+    # Precomputed per-call sound sequence: one 1s sound per talk second,
+    # '&'-joined so the dialplan plays the whole call with ONE Playback()
+    # (func_cut is broken in this Asterisk build, so no dialplan-side selection).
+    talk_sounds = max(1, int(round(talk_total))) if outf == "TALK" else 0
+    seq = []
+    for _ in range(talk_sounds):
+        s = random_sound()
+        if s:
+            seq.append(s)
+    sounds_csv = "&".join(seq)
 
-    # D. Early media (small chance): 183+Progress, play, then decline or answer.
-    if random.random() < p_early:
-        progress()
-        early_result = hold_with_decline(early_play, decline_prob=p_decline_early / max(early_play, 1.0) * 0.5,
-                                         poll_s=0.5)
-        if early_result is None:
-            return
-        if early_result is False or random.random() < 0.4:
-            hangup(0)
-            return
-        # else continue to answer.
-
-    # E. Answer (200 OK) + pickup gap.
-    answer()
-    if not alive():
-        return
-    wait_seconds(gap)
-
-    # F. Talk loop with per-chunk hangup risk.
-    elapsed = 0.0
-    while elapsed < talk_total:
-        if not alive():
-            return
-        # Stream a chunk (real audio, ~chunk seconds on average).
-        play_for_seconds(min(chunk, talk_total - elapsed))
-        elapsed += chunk
-        if not alive():
-            return
-        if random.random() < p_hangup_per_chunk:
-            hangup(0)
-            return
-        wait_seconds(random.uniform(0.2, 1.5))  # brief inter-chunk pause
-
-    hangup(0)
-
-
-
+    for name, val in {
+        "CALLEE_OUTCOME": outf,
+        "CALLEE_PDD": f"{pdd:.2f}",
+        "CALLEE_RING": f"{ring:.2f}" if outf in ("EARLY", "TALK") else "0.00",
+        "CALLEE_RING_DECLINE_AT": f"{ring_decline_at:.2f}" if ring_decline_at is not None else "0.00",
+        "CALLEE_ABANDON_AT": f"{abandon_at:.2f}",
+        "CALLEE_EARLY_PLAY": f"{early_play_at:.2f}",
+        "CALLEE_EARLY_DECLINE": "1" if early_declined else "0",
+        "CALLEE_EARLY_ABANDON": "1" if early_abandon else "0",
+        "CALLEE_GAP": f"{gap:.2f}",
+        "CALLEE_SOUNDS": sounds_csv,
+    }.items():
+        set_var(name, val)
